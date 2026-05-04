@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>チョコボンバー — たまごでどかーん！</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #1a0e08;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    touch-action: none;
+    user-select: none;
+}
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+#ui-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+#hud {
+    position: absolute;
+    top: 12px; left: 12px; right: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    pointer-events: none;
+}
+.hud-box {
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(255,180,80,0.4);
+    border-radius: 10px;
+    padding: 6px 14px;
+    color: #ffe0a0;
+    font-size: 14px;
+    font-weight: 700;
+}
+#title-screen, #level-clear, #game-over {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,5,2,0.92);
+    pointer-events: auto;
+    transition: opacity 0.3s;
+}
+.hidden { opacity: 0; pointer-events: none !important; }
+h1 {
+    font-size: 42px;
+    color: #ff9040;
+    text-shadow: 0 0 20px rgba(255,120,40,0.6);
+    margin-bottom: 8px;
+}
+h1 .egg-icon { font-size: 48px; }
+.subtitle {
+    color: #c89060;
+    font-size: 16px;
+    margin-bottom: 32px;
+}
+.btn {
+    background: linear-gradient(135deg, #ff7020, #ff4500);
+    border: none;
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+    padding: 14px 40px;
+    border-radius: 30px;
+    cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.15s;
+    box-shadow: 0 4px 20px rgba(255,80,0,0.4);
+    pointer-events: auto;
+}
+.btn:hover { transform: scale(1.05); box-shadow: 0 6px 30px rgba(255,80,0,0.6); }
+.btn:active { transform: scale(0.97); }
+.level-title {
+    font-size: 28px;
+    color: #ffe080;
+    margin-bottom: 12px;
+}
+.score-display {
+    font-size: 20px;
+    color: #ffb060;
+    margin-bottom: 20px;
+}
+.chain-msg {
+    font-size: 16px;
+    color: #c0a070;
+    margin-bottom: 24px;
+}
+#instructions {
+    color: #a08060;
+    font-size: 13px;
+    margin-top: 20px;
+    text-align: center;
+    line-height: 1.8;
+}
+@media (max-width: 500px) {
+    h1 { font-size: 32px; }
+    .hud-box { font-size: 12px; padding: 5px 10px; }
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui-overlay">
+    <div id="hud">
+        <div class="hud-box" id="hud-level">Lv.1</div>
+        <div class="hud-box" id="hud-taps">タップ: 3</div>
+        <div class="hud-box" id="hud-score">0 pt</div>
+    </div>
+
+    <div id="title-screen">
+        <h1><span class="egg-icon">🥚</span> チョコボンバー</h1>
+        <p class="subtitle">たまごをタップして、チョコチップでどかーん！</p>
+        <button class="btn" id="start-btn">スタート</button>
+        <div id="instructions">
+            たまごをタップ → チョコチップ誕生！<br>
+            チョコチップが大きくなると…どかーん！💥<br>
+            爆発で近くのたまごも割れて連鎖！<br>
+            少ないタップで全部割ろう！
+        </div>
+    </div>
+
+    <div id="level-clear" class="hidden">
+        <div class="level-title" id="clear-title">レベルクリア！</div>
+        <div class="score-display" id="clear-score">+500 pt</div>
+        <div class="chain-msg" id="clear-chain">最大チェイン: 5</div>
+        <button class="btn" id="next-btn">次のレベル →</button>
+    </div>
+
+    <div id="game-over" class="hidden">
+        <div class="level-title">ゲームオーバー</div>
+        <div class="score-display" id="final-score">合計: 2000 pt</div>
+        <div class="chain-msg" id="final-level">到達レベル: 5</div>
+        <button class="btn" id="retry-btn">もう一回</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ── State ──
+let W, H, dpr;
+let eggs = [];
+let chocos = [];
+let particles = [];
+let explosions = [];
+let floatingTexts = [];
+let shakeTime = 0, shakeIntensity = 0;
+let hoverX = -1, hoverY = -1;
+
+let level = 1;
+let tapsLeft = 3;
+let score = 0;
+let maxChain = 0;
+let currentChain = 0;
+let gameState = 'title'; // title, playing, animating, clear, gameover
+let eggsTotal = 0;
+let eggsCracked = 0;
+
+// ── Resize ──
+function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Colors ──
+const CHOCO_COLORS = ['#5c2e0a', '#7a3f1a', '#4a2208', '#6b3510', '#8b4513'];
+const EGG_COLORS = ['#fff8e8', '#ffeedd', '#fff5e0', '#ffe8cc'];
+const EXPLOSION_COLORS = ['#ff6020', '#ffaa00', '#ff4500', '#ffcc33', '#ff8800'];
+
+// ── Egg class ──
+class Egg {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 22 + Math.random() * 6;
+        this.color = EGG_COLORS[Math.floor(Math.random() * EGG_COLORS.length)];
+        this.crackPhase = 0; // 0=intact, 1=cracking, 2=hatched
+        this.wobble = 0;
+        this.wobbleSpeed = 3 + Math.random() * 2;
+        this.crackTimer = 0;
+        this.spots = [];
+        // Add chocolate spots on egg
+        for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
+            this.spots.push({
+                angle: Math.random() * Math.PI * 2,
+                dist: this.radius * (0.3 + Math.random() * 0.4),
+                size: 2 + Math.random() * 3,
+                color: CHOCO_COLORS[Math.floor(Math.random() * CHOCO_COLORS.length)]
+            });
+        }
+    }
+
+    draw() {
+        if (this.crackPhase >= 2) return;
+
+        const wx = Math.sin(this.wobble) * 2;
+        ctx.save();
+        ctx.translate(this.x + wx, this.y);
+
+        // Egg shape (oval)
+        ctx.beginPath();
+        ctx.ellipse(0, 0, this.radius * 0.8, this.radius, 0, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(180,150,100,0.4)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Chocolate spots
+        for (const s of this.spots) {
+            ctx.beginPath();
+            ctx.arc(
+                Math.cos(s.angle) * s.dist * 0.8,
+                Math.sin(s.angle) * s.dist,
+                s.size, 0, Math.PI * 2
+            );
+            ctx.fillStyle = s.color;
+            ctx.fill();
+        }
+
+        // Crack lines
+        if (this.crackPhase === 1) {
+            ctx.strokeStyle = '#5c3a1a';
+            ctx.lineWidth = 2;
+            const progress = Math.min(this.crackTimer / 0.4, 1);
+            for (let i = 0; i < 3; i++) {
+                const angle = (Math.PI * 2 / 3) * i + 0.3;
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                const len = this.radius * progress * 0.9;
+                ctx.lineTo(Math.cos(angle) * len, Math.sin(angle) * len);
+                if (progress > 0.5) {
+                    const branchAngle = angle + 0.4;
+                    ctx.moveTo(Math.cos(angle) * len * 0.5, Math.sin(angle) * len * 0.5);
+                    ctx.lineTo(Math.cos(branchAngle) * len * 0.7, Math.sin(branchAngle) * len * 0.7);
+                }
+                ctx.stroke();
+            }
+        }
+
+        // Shine
+        ctx.beginPath();
+        ctx.ellipse(-this.radius * 0.25, -this.radius * 0.35, this.radius * 0.15, this.radius * 0.2, -0.3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    update(dt) {
+        if (this.crackPhase === 0) {
+            this.wobble += this.wobbleSpeed * dt;
+        } else if (this.crackPhase === 1) {
+            this.crackTimer += dt;
+            this.wobble += 20 * dt;
+            if (this.crackTimer > 0.5) {
+                this.hatch();
+            }
+        }
+    }
+
+    hatch() {
+        this.crackPhase = 2;
+        eggsCracked++;
+        // Spawn shell particles
+        for (let i = 0; i < 8; i++) {
+            const angle = (Math.PI * 2 / 8) * i + Math.random() * 0.3;
+            particles.push(new Particle(
+                this.x, this.y,
+                Math.cos(angle) * (60 + Math.random() * 40),
+                Math.sin(angle) * (60 + Math.random() * 40) - 30,
+                this.color, 3 + Math.random() * 4, 0.8
+            ));
+        }
+        // Spawn choco character
+        chocos.push(new Choco(this.x, this.y));
+    }
+
+    contains(px, py) {
+        const dx = px - this.x;
+        const dy = py - this.y;
+        return (dx * dx / (this.radius * 0.8 * this.radius * 0.8) + dy * dy / (this.radius * this.radius)) <= 1;
+    }
+}
+
+// ── Choco chip character ──
+class Choco {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.scale = 0.1;
+        this.targetScale = 1;
+        this.maxScale = 1.8;
+        this.growSpeed = 2.5;
+        this.phase = 'growing'; // growing, full, exploding
+        this.timer = 0;
+        this.fullTimer = 0;
+        this.color = CHOCO_COLORS[Math.floor(Math.random() * CHOCO_COLORS.length)];
+        this.eyeBlink = 0;
+        this.chipSpots = [];
+        for (let i = 0; i < 5; i++) {
+            this.chipSpots.push({
+                angle: Math.random() * Math.PI * 2,
+                dist: 8 + Math.random() * 8,
+                size: 3 + Math.random() * 3
+            });
+        }
+        this.explosionRadius = 120 + Math.random() * 40;
+    }
+
+    draw() {
+        if (this.phase === 'dead') return;
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.scale(this.scale, this.scale);
+
+        // Body - round cookie shape
+        ctx.beginPath();
+        ctx.arc(0, 0, 20, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(40,20,0,0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Chocolate chips on the cookie body
+        for (const chip of this.chipSpots) {
+            ctx.beginPath();
+            ctx.arc(
+                Math.cos(chip.angle) * chip.dist,
+                Math.sin(chip.angle) * chip.dist,
+                chip.size, 0, Math.PI * 2
+            );
+            ctx.fillStyle = '#2a1000';
+            ctx.fill();
+        }
+
+        // Face
+        const blinkY = this.eyeBlink > 0.9 ? 0 : 1;
+        // Eyes
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.ellipse(-7, -4, 4, 5 * blinkY || 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(7, -4, 4, 5 * blinkY || 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Pupils
+        if (blinkY > 0.5) {
+            ctx.fillStyle = '#1a0800';
+            ctx.beginPath();
+            ctx.arc(-7, -3, 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(7, -3, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Mouth - getting more excited as it grows
+        if (this.phase === 'full') {
+            // Excited open mouth
+            ctx.beginPath();
+            ctx.arc(0, 6, 6, 0, Math.PI);
+            ctx.fillStyle = '#1a0800';
+            ctx.fill();
+        } else {
+            // Smile
+            ctx.beginPath();
+            ctx.arc(0, 5, 4, 0.1, Math.PI - 0.1);
+            ctx.strokeStyle = '#1a0800';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+
+        // Pulsing glow when about to explode
+        if (this.phase === 'full') {
+            const pulse = Math.sin(this.fullTimer * 8) * 0.3 + 0.3;
+            ctx.beginPath();
+            ctx.arc(0, 0, 24, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255,100,0,${pulse})`;
+            ctx.fill();
+        }
+
+        ctx.restore();
+    }
+
+    update(dt) {
+        if (this.phase === 'dead') return;
+
+        this.timer += dt;
+        this.eyeBlink = (this.timer * 0.7) % 1;
+
+        if (this.phase === 'growing') {
+            this.scale += this.growSpeed * dt;
+            if (this.scale >= this.maxScale) {
+                this.scale = this.maxScale;
+                this.phase = 'full';
+                this.fullTimer = 0;
+            }
+        } else if (this.phase === 'full') {
+            this.fullTimer += dt;
+            // Pulse scale
+            this.scale = this.maxScale + Math.sin(this.fullTimer * 8) * 0.1;
+            if (this.fullTimer > 0.6) {
+                this.explode();
+            }
+        }
+    }
+
+    explode() {
+        this.phase = 'dead';
+        currentChain++;
+        if (currentChain > maxChain) maxChain = currentChain;
+
+        // Score
+        const points = 100 * currentChain;
+        score += points;
+        updateHUD();
+
+        // Floating text
+        floatingTexts.push(new FloatingText(
+            this.x, this.y - 30,
+            currentChain > 1 ? `${currentChain}連鎖！ +${points}` : `+${points}`,
+            currentChain > 3 ? '#ff4400' : currentChain > 1 ? '#ffaa00' : '#ffe080'
+        ));
+
+        if (currentChain >= 3) {
+            floatingTexts.push(new FloatingText(
+                this.x, this.y + 10,
+                'どかーん！💥',
+                '#ff2200',
+                32
+            ));
+        }
+
+        // Screen shake
+        shakeTime = 0.3;
+        shakeIntensity = Math.min(currentChain * 3, 15);
+
+        // Explosion visual
+        explosions.push(new Explosion(this.x, this.y, this.explosionRadius));
+
+        // Particles
+        for (let i = 0; i < 20; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 80 + Math.random() * 150;
+            particles.push(new Particle(
+                this.x, this.y,
+                Math.cos(angle) * speed,
+                Math.sin(angle) * speed - 40,
+                EXPLOSION_COLORS[Math.floor(Math.random() * EXPLOSION_COLORS.length)],
+                3 + Math.random() * 5,
+                0.6 + Math.random() * 0.4
+            ));
+        }
+        // Chocolate chip particles
+        for (let i = 0; i < 10; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 50 + Math.random() * 100;
+            particles.push(new Particle(
+                this.x, this.y,
+                Math.cos(angle) * speed,
+                Math.sin(angle) * speed - 60,
+                CHOCO_COLORS[Math.floor(Math.random() * CHOCO_COLORS.length)],
+                4 + Math.random() * 6,
+                0.8 + Math.random() * 0.4
+            ));
+        }
+
+        // Chain reaction - crack nearby eggs
+        for (const egg of eggs) {
+            if (egg.crackPhase !== 0) continue;
+            const dx = egg.x - this.x;
+            const dy = egg.y - this.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < this.explosionRadius) {
+                egg.crackPhase = 1;
+                egg.crackTimer = 0;
+            }
+        }
+    }
+}
+
+// ── Explosion ring ──
+class Explosion {
+    constructor(x, y, radius) {
+        this.x = x;
+        this.y = y;
+        this.maxRadius = radius;
+        this.radius = 0;
+        this.alpha = 1;
+        this.speed = radius * 3;
+    }
+
+    draw() {
+        if (this.alpha <= 0) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,120,20,${this.alpha})`;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        // Inner glow
+        const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius);
+        grad.addColorStop(0, `rgba(255,200,50,${this.alpha * 0.3})`);
+        grad.addColorStop(0.7, `rgba(255,100,0,${this.alpha * 0.1})`);
+        grad.addColorStop(1, 'rgba(255,50,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.restore();
+    }
+
+    update(dt) {
+        this.radius += this.speed * dt;
+        this.alpha = 1 - (this.radius / this.maxRadius);
+        if (this.radius >= this.maxRadius) this.alpha = 0;
+    }
+
+    isDead() { return this.alpha <= 0; }
+}
+
+// ── Particle ──
+class Particle {
+    constructor(x, y, vx, vy, color, size, life) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.color = color;
+        this.size = size;
+        this.life = life;
+        this.maxLife = life;
+        this.gravity = 200;
+    }
+
+    draw() {
+        const alpha = this.life / this.maxLife;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size * alpha, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.globalAlpha = alpha;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+
+    update(dt) {
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.vy += this.gravity * dt;
+        this.vx *= 0.98;
+        this.life -= dt;
+    }
+
+    isDead() { return this.life <= 0; }
+}
+
+// ── Floating text ──
+class FloatingText {
+    constructor(x, y, text, color, size) {
+        this.x = x;
+        this.y = y;
+        this.text = text;
+        this.color = color;
+        this.size = size || 20;
+        this.life = 1.2;
+        this.maxLife = 1.2;
+        this.vy = -50;
+    }
+
+    draw() {
+        const alpha = this.life / this.maxLife;
+        const scale = 0.8 + (1 - this.life / this.maxLife) * 0.4;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = `bold ${this.size * scale}px 'Helvetica Neue', sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = this.color;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(this.text, this.x, this.y);
+        ctx.restore();
+    }
+
+    update(dt) {
+        this.y += this.vy * dt;
+        this.vy *= 0.97;
+        this.life -= dt;
+    }
+
+    isDead() { return this.life <= 0; }
+}
+
+// ── Level generation ──
+function generateLevel(lvl) {
+    eggs = [];
+    chocos = [];
+    currentChain = 0;
+    eggsCracked = 0;
+
+    const count = Math.min(6 + lvl * 3, 40);
+    eggsTotal = count;
+    tapsLeft = Math.max(1, Math.ceil(count / 6));
+
+    const margin = 60;
+    const playW = W - margin * 2;
+    const playH = H - margin * 2 - 60;
+    const minDist = 50;
+
+    // Create clusters — eggs grouped near cluster centers for chain reactions
+    const numClusters = Math.max(1, Math.ceil(count / 5));
+    const centers = [];
+    for (let c = 0; c < numClusters; c++) {
+        let cx, cy, tries = 0;
+        do {
+            cx = margin + Math.random() * playW;
+            cy = margin + 60 + Math.random() * playH;
+            tries++;
+        } while (tries < 30 && centers.some(p => {
+            const dx = p.x - cx, dy = p.y - cy;
+            return Math.sqrt(dx * dx + dy * dy) < 150;
+        }));
+        centers.push({ x: cx, y: cy });
+    }
+
+    for (let i = 0; i < count; i++) {
+        const cluster = centers[i % centers.length];
+        let x, y, tries = 0;
+        do {
+            // Place eggs within 60-100px of cluster center
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 30 + Math.random() * 70;
+            x = cluster.x + Math.cos(angle) * dist;
+            y = cluster.y + Math.sin(angle) * dist;
+            // Clamp to play area
+            x = Math.max(margin, Math.min(W - margin, x));
+            y = Math.max(margin + 50, Math.min(H - margin, y));
+            tries++;
+        } while (tries < 40 && eggs.some(e => {
+            const dx = e.x - x, dy = e.y - y;
+            return Math.sqrt(dx * dx + dy * dy) < minDist;
+        }));
+        eggs.push(new Egg(x, y));
+    }
+
+    updateHUD();
+}
+
+// ── HUD ──
+function updateHUD() {
+    document.getElementById('hud-level').textContent = `Lv.${level}`;
+    document.getElementById('hud-taps').textContent = `タップ: ${tapsLeft}`;
+    document.getElementById('hud-score').textContent = `${score} pt`;
+}
+
+// ── Input ──
+function handleTap(px, py) {
+    if (gameState !== 'playing') return;
+    if (tapsLeft <= 0) return;
+
+    for (const egg of eggs) {
+        if (egg.crackPhase !== 0) continue;
+        if (egg.contains(px, py)) {
+            egg.crackPhase = 1;
+            egg.crackTimer = 0;
+            tapsLeft--;
+            currentChain = 0;
+            updateHUD();
+            gameState = 'animating';
+            return;
+        }
+    }
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    handleTap(x, y);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    hoverX = e.clientX - rect.left;
+    hoverY = e.clientY - rect.top;
+});
+canvas.addEventListener('pointerleave', () => { hoverX = -1; hoverY = -1; });
+
+// ── Draw background ──
+function drawBackground() {
+    // Warm gradient
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a1508');
+    grad.addColorStop(0.5, '#1a0e06');
+    grad.addColorStop(1, '#0f0804');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Subtle cookie texture dots
+    ctx.globalAlpha = 0.03;
+    for (let x = 0; x < W; x += 30) {
+        for (let y = 0; y < H; y += 30) {
+            ctx.beginPath();
+            ctx.arc(x + Math.sin(y * 0.1) * 5, y + Math.cos(x * 0.1) * 5, 2, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffaa44';
+            ctx.fill();
+        }
+    }
+    ctx.globalAlpha = 1;
+}
+
+// ── Game loop ──
+let lastTime = 0;
+
+function gameLoop(timestamp) {
+    const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+    lastTime = timestamp;
+
+    // Screen shake
+    ctx.save();
+    if (shakeTime > 0) {
+        shakeTime -= dt;
+        const sx = (Math.random() - 0.5) * shakeIntensity * 2;
+        const sy = (Math.random() - 0.5) * shakeIntensity * 2;
+        ctx.translate(sx, sy);
+        shakeIntensity *= 0.9;
+    }
+
+    drawBackground();
+
+    // Update & draw eggs
+    for (const egg of eggs) {
+        egg.update(dt);
+        egg.draw();
+    }
+
+    // Draw hover hint — show explosion radius when hovering over an egg
+    if (gameState === 'playing' && hoverX >= 0 && tapsLeft > 0) {
+        for (const egg of eggs) {
+            if (egg.crackPhase !== 0) continue;
+            if (egg.contains(hoverX, hoverY)) {
+                const r = 140; // approximate explosion radius hint
+                ctx.beginPath();
+                ctx.arc(egg.x, egg.y, r, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255,120,40,0.25)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 4]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                // Highlight eggs within blast radius
+                for (const other of eggs) {
+                    if (other === egg || other.crackPhase !== 0) continue;
+                    const dx = other.x - egg.x, dy = other.y - egg.y;
+                    if (Math.sqrt(dx * dx + dy * dy) < r) {
+                        ctx.beginPath();
+                        ctx.ellipse(other.x, other.y, other.radius * 0.8 + 4, other.radius + 4, 0, 0, Math.PI * 2);
+                        ctx.strokeStyle = 'rgba(255,160,40,0.4)';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // Update & draw chocos
+    for (const choco of chocos) {
+        choco.update(dt);
+        choco.draw();
+    }
+
+    // Update & draw explosions
+    for (const exp of explosions) {
+        exp.update(dt);
+        exp.draw();
+    }
+    explosions = explosions.filter(e => !e.isDead());
+
+    // Update & draw particles
+    for (const p of particles) {
+        p.update(dt);
+        p.draw();
+    }
+    particles = particles.filter(p => !p.isDead());
+
+    // Update & draw floating texts
+    for (const ft of floatingTexts) {
+        ft.update(dt);
+        ft.draw();
+    }
+    floatingTexts = floatingTexts.filter(ft => !ft.isDead());
+
+    // Clean up dead chocos
+    chocos = chocos.filter(c => c.phase !== 'dead');
+
+    ctx.restore();
+
+    // Check if animation is done
+    if (gameState === 'animating') {
+        const hasActiveEggs = eggs.some(e => e.crackPhase === 1);
+        const hasActiveChocos = chocos.length > 0;
+        if (!hasActiveEggs && !hasActiveChocos && explosions.length === 0) {
+            // Animation done - check state
+            checkLevelState();
+        }
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+function checkLevelState() {
+    const allCracked = eggs.every(e => e.crackPhase === 2);
+
+    if (allCracked) {
+        // Level clear!
+        const bonus = tapsLeft * 200;
+        score += bonus;
+        gameState = 'clear';
+        showLevelClear(bonus);
+    } else if (tapsLeft <= 0) {
+        // No taps left, eggs remaining
+        gameState = 'gameover';
+        showGameOver();
+    } else {
+        // Still have taps
+        gameState = 'playing';
+    }
+}
+
+// ── UI transitions ──
+function showLevelClear(bonus) {
+    document.getElementById('clear-title').textContent = `レベル ${level} クリア！🎉`;
+    document.getElementById('clear-score').textContent = bonus > 0
+        ? `+${bonus} ボーナス（残りタップ×200）`
+        : `合計: ${score} pt`;
+    document.getElementById('clear-chain').textContent = `最大チェイン: ${maxChain}連鎖`;
+    document.getElementById('level-clear').classList.remove('hidden');
+}
+
+function showGameOver() {
+    document.getElementById('final-score').textContent = `合計: ${score} pt`;
+    document.getElementById('final-level').textContent = `到達レベル: ${level} / 最大チェイン: ${maxChain}`;
+    document.getElementById('game-over').classList.remove('hidden');
+}
+
+function startGame() {
+    level = 1;
+    score = 0;
+    maxChain = 0;
+    document.getElementById('title-screen').classList.add('hidden');
+    startLevel();
+}
+
+function startLevel() {
+    particles = [];
+    explosions = [];
+    floatingTexts = [];
+    generateLevel(level);
+    gameState = 'playing';
+}
+
+function nextLevel() {
+    level++;
+    maxChain = 0;
+    document.getElementById('level-clear').classList.add('hidden');
+    startLevel();
+}
+
+function retryGame() {
+    document.getElementById('game-over').classList.add('hidden');
+    level = 1;
+    score = 0;
+    maxChain = 0;
+    startLevel();
+}
+
+// ── Button events ──
+document.getElementById('start-btn').addEventListener('click', startGame);
+document.getElementById('next-btn').addEventListener('click', nextLevel);
+document.getElementById('retry-btn').addEventListener('click', retryGame);
+
+// ── Start ──
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
